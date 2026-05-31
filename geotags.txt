@@ -1,0 +1,18 @@
+# Cherry Rewards — Store Geotags
+# Format: lat, lng, Store Name
+# One store per line. Lines starting with # are comments.
+# Add or edit stores here then re-deploy to seed the database.
+
+# ── Auckland, NZ ──────────────────────────────────────────────────────────────
+-36.8485, 174.7633, Cherry – Auckland City Centre
+-36.8600, 174.7500, Cherry – Westfield Newmarket
+-36.8404, 174.7396, Cherry – Ponsonby Road
+-36.8688, 174.7624, Cherry – Newmarket High St
+-36.8295, 174.7872, Cherry – Parnell Village
+-36.8756, 174.7055, Cherry – Mt Eden
+-36.8532, 174.7212, Cherry – Grey Lynn
+-36.8947, 174.7319, Cherry – Royal Oak
+
+# ── Example — Sydney ──────────────────────────────────────────────────────────
+# -33.8688, 151.2093, Cherry – Sydney CBD
+# -33.8800, 151.1950, Cherry – Glebe

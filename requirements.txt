@@ -1,0 +1,6 @@
+flask
+flask-cors
+paho-mqtt
+psycopg2-binary
+python-dotenv
+gunicorn

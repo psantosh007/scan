@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>Cherry Rewards</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+
+<!-- MapLibre GL JS (powers OpenFreeMap) -->
+<link href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
+
+<!-- MQTT over WebSocket -->
+<script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+
+<!-- jsQR (QR code decoder, lazy-loaded on scan) -->
+
+<style>
+/* ── Reset & tokens ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; -webkit-tap-highlight-color: transparent; }
+
+:root {
+  --cherry:      #C8102E;
+  --cherry-dark: #8B0A1F;
+  --cherry-glow: rgba(200,16,46,.35);
+  --sky:         #38BDF8;
+  --sky-dark:    #0EA5E9;
+  --cream:       #FAF7F2;
+  --card:        #FFFFFF;
+  --dark:        #140609;
+  --text:        #2A1018;
+  --muted:       #9B7B83;
+  --border:      #EAD8DE;
+  --green:       #22C55E;
+  --green-glow:  rgba(34,197,94,.4);
+  --r:           18px;
+  --shadow:      0 2px 20px rgba(0,0,0,.08);
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--cream);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+header {
+  position: sticky; top: 0; z-index: 300;
+  height: 60px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 18px;
+  box-shadow: 0 1px 12px rgba(200,16,46,.06);
+}
+.logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.wordmark {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.45rem; font-weight: 700;
+  color: var(--cherry); letter-spacing: -.02em; line-height: 1;
+}
+.hdr-right { display: flex; align-items: center; gap: 8px; }
+
+.btn-ghost {
+  font-family: 'DM Sans', sans-serif;
+  font-size: .8rem; font-weight: 600;
+  padding: 6px 14px; border-radius: 100px; cursor: pointer;
+  border: 1.5px solid var(--cherry); color: var(--cherry);
+  background: none; transition: all .18s; white-space: nowrap;
+}
+.btn-ghost:hover { background: var(--cherry); color: #fff; }
+
+.btn-sub {
+  font-family: 'DM Sans', sans-serif;
+  font-size: .8rem; font-weight: 600;
+  padding: 7px 15px; border-radius: 100px;
+  border: none; background: var(--cherry); color: #fff;
+  text-decoration: none; display: inline-flex; align-items: center; gap: 4px;
+  cursor: pointer; transition: all .18s; white-space: nowrap;
+  box-shadow: 0 3px 10px var(--cherry-glow);
+}
+.btn-sub:hover { background: var(--cherry-dark); transform: translateY(-1px); }
+
+/* MQTT bar */
+.mqtt-bar {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+  padding: 4px 18px 0;
+  font-size: .68rem; color: var(--muted); letter-spacing: .04em;
+}
+.mqtt-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #ccc; flex-shrink: 0; transition: background .3s;
+}
+.mqtt-dot.on   { background: var(--green); box-shadow: 0 0 0 3px var(--green-glow); }
+.mqtt-dot.busy { background: #f97316; animation: blink .7s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ── Scanner viewport ───────────────────────────────────────────── */
+.scanner-wrap {
+  position: relative;
+  width: 100%; aspect-ratio: 1/1;
+  background: var(--dark);
+  overflow: hidden;
+}
+.scanner-wrap::before {
+  content:''; position:absolute; inset:0; z-index:0;
+  background: radial-gradient(ellipse 70% 60% at 50% 50%, #2a0e14 0%, #0d0305 100%);
+}
+.scanner-wrap::after {
+  content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.12;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+#camFeed {
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:cover; z-index:1; display:none;
+}
+#camCanvas { display:none; }
+
+.scan-frame {
+  position:absolute; z-index:2;
+  top:50%; left:50%; transform:translate(-50%,-50%);
+  width:58%; aspect-ratio:1/1;
+}
+.corner {
+  position:absolute; width:24px; height:24px;
+  border-color:var(--cherry); border-style:solid;
+  filter: drop-shadow(0 0 7px var(--cherry));
+}
+.corner.tl { top:0;left:0;   border-width:3px 0 0 3px; border-radius:4px 0 0 0; }
+.corner.tr { top:0;right:0;  border-width:3px 3px 0 0; border-radius:0 4px 0 0; }
+.corner.bl { bottom:0;left:0;  border-width:0 0 3px 3px; border-radius:0 0 0 4px; }
+.corner.br { bottom:0;right:0; border-width:0 3px 3px 0; border-radius:0 0 4px 0; }
+
+.sweep {
+  position:absolute; left:3px; right:3px; height:2px; top:3px;
+  background: linear-gradient(90deg, transparent, var(--cherry), #ff6b6b 50%, var(--cherry), transparent);
+  box-shadow: 0 0 10px 3px var(--cherry-glow);
+  animation: sweep 2.6s ease-in-out infinite;
+}
+@keyframes sweep {
+  0%  { top:3px; opacity:0; }
+  5%  { opacity:1; }
+  48% { top:calc(100% - 5px); opacity:1; }
+  50% { top:calc(100% - 5px); opacity:0; }
+  51% { top:3px; opacity:0; }
+  56% { opacity:1; }
+  100%{ top:3px; opacity:1; }
+}
+
+.scan-label {
+  position:absolute; z-index:2;
+  bottom:13%; left:0; right:0; text-align:center;
+  font-size:.7rem; letter-spacing:.12em;
+  color:rgba(255,255,255,.35);
+}
+.live-badge {
+  position:absolute; z-index:2;
+  bottom:5%; left:50%; transform:translateX(-50%);
+  display:flex; align-items:center; gap:7px;
+  font-size:.72rem; font-weight:700; letter-spacing:.12em; color:var(--green);
+}
+.live-pulse {
+  width:9px; height:9px; border-radius:50%;
+  background:var(--green); flex-shrink:0;
+  animation: livePulse 1.6s ease infinite;
+}
+@keyframes livePulse {
+  0%  { box-shadow:0 0 0 0 var(--green-glow); }
+  70% { box-shadow:0 0 0 9px rgba(34,197,94,0); }
+  100%{ box-shadow:0 0 0 0 rgba(34,197,94,0); }
+}
+
+/* ── Scan button ────────────────────────────────────────────────── */
+.scan-btn-zone { padding:14px 18px 6px; }
+#scanBtn {
+  width:100%;
+  background:var(--cherry); color:#fff; border:none;
+  border-radius:14px; padding:17px 20px;
+  font-family:'DM Sans',sans-serif;
+  font-size:1rem; font-weight:700; letter-spacing:.02em;
+  cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:11px;
+  box-shadow:0 5px 22px var(--cherry-glow);
+  transition:all .18s;
+}
+#scanBtn:hover  { background:var(--cherry-dark); transform:translateY(-1px); }
+#scanBtn:active { transform:scale(.985); }
+
+/* ── Section label ──────────────────────────────────────────────── */
+.sec-label {
+  padding:18px 18px 8px;
+  font-size:.66rem; font-weight:700;
+  letter-spacing:.16em; text-transform:uppercase;
+  color:var(--muted);
+}
+
+/* ── QR Reward Card ─────────────────────────────────────────────── */
+.qr-card {
+  margin:0 18px;
+  background:var(--card);
+  border-radius:var(--r);
+  box-shadow:var(--shadow);
+  display:flex; overflow:hidden;
+  min-height:162px;
+  border:1px solid var(--border);
+}
+.reward-half {
+  flex:1; min-width:0; padding:16px 14px;
+  display:flex; flex-direction:column; justify-content:space-between;
+  border-right:1px dashed var(--border);
+}
+.rew-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  background:#FFF0F3; color:var(--cherry);
+  border:1px solid #FFD6DE;
+  border-radius:100px; font-size:.67rem; font-weight:700;
+  padding:3px 9px; width:fit-content; margin-bottom:9px;
+}
+.rew-title {
+  font-family:'Playfair Display',serif;
+  font-size:1rem; font-weight:700; line-height:1.3;
+  margin-bottom:5px; color:var(--text);
+}
+.rew-desc { font-size:.76rem; color:var(--muted); line-height:1.55; }
+.rew-exp  { font-size:.68rem; color:var(--muted); margin-top:10px; }
+.rew-exp b{ color:var(--cherry); font-weight:600; }
+
+.qr-half {
+  width:136px; flex-shrink:0;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  padding:12px 8px; gap:7px;
+  background:#FAFAFA;
+}
+.qr-caption { font-size:.62rem; color:var(--muted); letter-spacing:.06em; text-align:center; }
+#userIdLine  { font-size:.58rem; color:var(--muted); text-align:center; font-weight:600; }
+
+/* QR SVG colours */
+.qr-svg .finder-stroke { stroke:var(--text); fill:none; stroke-width:3; }
+.qr-svg .finder-inner  { fill:var(--text); }
+.qr-svg .data-mod      { fill:var(--text); }
+.qr-svg .center-bg     { fill:var(--sky); opacity:.18; }
+.qr-svg .center-inner  { fill:var(--sky-dark); opacity:.75; }
+.qr-svg .center-dot    { fill:var(--cherry); }
+
+/* ── Map section ────────────────────────────────────────────────── */
+.map-section { padding:0 18px 28px; }
+
+/* MapLibre container */
+#map {
+  width:100%; height:360px;
+  border-radius:var(--r);
+  border:1px solid var(--border);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+  position:relative; /* required by MapLibre */
+}
+
+/* Style the MapLibre attribution to match our brand */
+.maplibregl-ctrl-attrib {
+  font-family:'DM Sans',sans-serif !important;
+  font-size:.62rem !important;
+}
+/* Round the zoom controls */
+.maplibregl-ctrl-group { border-radius:10px !important; overflow:hidden; }
+
+/* Custom popup */
+.cherry-popup .maplibregl-popup-content {
+  font-family:'DM Sans',sans-serif;
+  border-radius:12px;
+  padding:10px 14px;
+  box-shadow:0 4px 18px rgba(0,0,0,.13);
+  min-width:130px;
+}
+.cherry-popup .maplibregl-popup-tip { border-top-color:#fff; }
+.popup-name { font-weight:700; font-size:.88rem; color:var(--text); }
+.popup-dist { font-size:.73rem; color:var(--muted); margin-top:2px; }
+
+.map-note {
+  font-size:.74rem; color:var(--muted);
+  margin-top:8px; text-align:center;
+}
+
+/* ── Auth modal ─────────────────────────────────────────────────── */
+.overlay {
+  display:none; position:fixed; inset:0; z-index:500;
+  background:rgba(20,6,9,.55);
+  backdrop-filter:blur(5px);
+  align-items:center; justify-content:center;
+}
+.overlay.open { display:flex; }
+.modal {
+  background:var(--card);
+  border-radius:22px; padding:34px 28px;
+  width:calc(100% - 36px); max-width:370px;
+  box-shadow:0 24px 64px rgba(200,16,46,.18);
+  position:relative;
+  animation:modalIn .22s ease;
+}
+@keyframes modalIn {
+  from { opacity:0; transform:translateY(18px) scale(.97); }
+  to   { opacity:1; transform:translateY(0) scale(1); }
+}
+.modal-x {
+  position:absolute; top:14px; right:16px;
+  background:none; border:none; font-size:1.5rem;
+  color:var(--muted); cursor:pointer; line-height:1; padding:4px;
+}
+.modal-title {
+  font-family:'Playfair Display',serif;
+  font-size:1.55rem; font-weight:700; margin-bottom:4px;
+}
+.modal-sub  { font-size:.82rem; color:var(--muted); margin-bottom:24px; }
+.field      { margin-bottom:14px; }
+.field label{
+  display:block; font-size:.76rem; font-weight:600;
+  margin-bottom:5px; letter-spacing:.02em;
+}
+.field input {
+  width:100%; padding:12px 14px;
+  border:1.5px solid var(--border); border-radius:11px;
+  font-family:'DM Sans',sans-serif; font-size:.95rem;
+  color:var(--text); background:var(--cream); outline:none;
+  transition:border .18s;
+}
+.field input:focus { border-color:var(--cherry); background:#fff; }
+.btn-full {
+  width:100%; background:var(--cherry); color:#fff; border:none;
+  border-radius:11px; padding:14px;
+  font-family:'DM Sans',sans-serif; font-size:.97rem; font-weight:700;
+  cursor:pointer; margin-top:6px; transition:background .18s;
+}
+.btn-full:hover { background:var(--cherry-dark); }
+.modal-foot {
+  text-align:center; margin-top:14px;
+  font-size:.8rem; color:var(--muted);
+}
+.modal-foot a { color:var(--cherry); font-weight:600; cursor:pointer; }
+
+/* ── Toast ──────────────────────────────────────────────────────── */
+#toast {
+  position:fixed; bottom:28px; left:50%; transform:translateX(-50%);
+  background:var(--dark); color:#fff;
+  border-radius:100px; padding:10px 22px;
+  font-size:.84rem; font-weight:500; white-space:nowrap;
+  z-index:999; opacity:0; pointer-events:none;
+  transition:opacity .25s; max-width:90vw;
+  overflow:hidden; text-overflow:ellipsis;
+}
+#toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<!-- ════ HEADER ══════════════════════════════════════════════════ -->
+<header>
+  <a class="logo" href="#">
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="13" cy="26" r="6.5" fill="#C8102E" opacity=".9"/>
+      <circle cx="26" cy="13" r="6.5" fill="#C8102E" opacity=".9"/>
+      <circle cx="18"   cy="15" r="6.5" fill="#C8102E"/>
+      <circle cx="25"   cy="26" r="6.5" fill="#8B0A1F" opacity=".65"/>
+      <path d="M18 8.5C18 5 24.5 3.5 25.5 1" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+    </svg>
+    <span class="wordmark">CherryTag</span>
+  </a>
+  <div class="hdr-right">
+    <button class="btn-ghost" onclick="openAuth('signin')">Sign in</button>
+    <button class="btn-ghost" onclick="openAuth('signup')">Sign up</button>
+    <a class="btn-sub" href="https://cherry.rewards/subscribe" target="_blank" rel="noopener noreferrer">
+      Subscribe
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+    </a>
+  </div>
+</header>
+
+<div class="mqtt-bar">
+  <div class="mqtt-dot busy" id="mqttDot"></div>
+  <span id="mqttTxt">Connecting…</span>
+</div>
+
+<!-- ════ MAIN ════════════════════════════════════════════════════ -->
+<main>
+
+  <!-- Scanner -->
+  <div class="scanner-wrap">
+    <video id="camFeed" autoplay playsinline muted></video>
+    <canvas id="camCanvas"></canvas>
+    <div class="scan-frame">
+      <div class="corner tl"></div><div class="corner tr"></div>
+      <div class="corner bl"></div><div class="corner br"></div>
+      <div class="sweep"></div>
+    </div>
+    <div class="scan-label">ALIGN QR CODE WITHIN FRAME</div>
+    <div class="live-badge"><div class="live-pulse"></div>LIVE</div>
+  </div>
+
+  <!-- Scan button -->
+  <div class="scan-btn-zone">
+    <button id="scanBtn" onclick="startScan()">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/>
+        <rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/>
+      </svg>
+      Scan Reward Code
+    </button>
+  </div>
+
+  <!-- QR Reward Card -->
+  <div class="sec-label">Your Active Reward</div>
+  <div class="qr-card">
+    <div class="reward-half">
+      <div>
+        <div class="rew-badge">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Active Reward
+        </div>
+        <div class="rew-title" id="rewTitle">Free Espresso Shot</div>
+        <div class="rew-desc"  id="rewDesc">One complimentary espresso with any beverage purchase at participating Cherry locations.</div>
+      </div>
+      <div class="rew-exp">Expires <b id="rewExp">30 Jun 2026</b></div>
+    </div>
+    <div class="qr-half">
+      <div class="qr-caption">YOUR ID</div>
+      <svg class="qr-svg" width="110" height="110" viewBox="0 0 110 110" xmlns="http://www.w3.org/2000/svg">
+        <rect x="4"  y="4"  width="28" height="28" rx="3.5" class="finder-stroke"/>
+        <rect x="10" y="10" width="16" height="16" rx="2"   class="finder-inner"/>
+        <rect x="78" y="4"  width="28" height="28" rx="3.5" class="finder-stroke"/>
+        <rect x="84" y="10" width="16" height="16" rx="2"   class="finder-inner"/>
+        <rect x="4"  y="78" width="28" height="28" rx="3.5" class="finder-stroke"/>
+        <rect x="10" y="84" width="16" height="16" rx="2"   class="finder-inner"/>
+        <rect x="38" y="38" width="34" height="34" rx="5" class="center-bg"/>
+        <rect x="42" y="42" width="26" height="26" rx="4" class="center-inner"/>
+        <circle cx="55" cy="55" r="5.5" class="center-dot"/>
+        <g class="data-mod">
+          <rect x="36" y="4"   width="5" height="5" rx="1"/><rect x="43" y="4"   width="5" height="5" rx="1"/>
+          <rect x="50" y="4"   width="5" height="5" rx="1"/><rect x="57" y="4"   width="5" height="5" rx="1"/>
+          <rect x="64" y="4"   width="5" height="5" rx="1"/><rect x="36" y="11"  width="5" height="5" rx="1"/>
+          <rect x="50" y="11"  width="5" height="5" rx="1"/><rect x="64" y="11"  width="5" height="5" rx="1"/>
+          <rect x="43" y="18"  width="5" height="5" rx="1"/><rect x="57" y="18"  width="5" height="5" rx="1"/>
+          <rect x="36" y="25"  width="5" height="5" rx="1"/><rect x="50" y="25"  width="5" height="5" rx="1"/>
+          <rect x="64" y="25"  width="5" height="5" rx="1"/>
+          <rect x="4"  y="36"  width="5" height="5" rx="1"/><rect x="4"  y="43"  width="5" height="5" rx="1"/>
+          <rect x="4"  y="57"  width="5" height="5" rx="1"/><rect x="4"  y="64"  width="5" height="5" rx="1"/>
+          <rect x="11" y="50"  width="5" height="5" rx="1"/><rect x="18" y="36"  width="5" height="5" rx="1"/>
+          <rect x="25" y="50"  width="5" height="5" rx="1"/><rect x="18" y="64"  width="5" height="5" rx="1"/>
+          <rect x="101" y="36" width="5" height="5" rx="1"/><rect x="101" y="50" width="5" height="5" rx="1"/>
+          <rect x="101" y="64" width="5" height="5" rx="1"/><rect x="94"  y="43" width="5" height="5" rx="1"/>
+          <rect x="87"  y="36" width="5" height="5" rx="1"/><rect x="87"  y="57" width="5" height="5" rx="1"/>
+          <rect x="94"  y="64" width="5" height="5" rx="1"/>
+          <rect x="36" y="101" width="5" height="5" rx="1"/><rect x="50" y="101" width="5" height="5" rx="1"/>
+          <rect x="64" y="101" width="5" height="5" rx="1"/><rect x="43" y="94"  width="5" height="5" rx="1"/>
+          <rect x="57" y="94"  width="5" height="5" rx="1"/><rect x="36" y="87"  width="5" height="5" rx="1"/>
+          <rect x="64" y="87"  width="5" height="5" rx="1"/>
+          <rect x="78" y="78" width="5" height="5" rx="1"/><rect x="85" y="85" width="5" height="5" rx="1"/>
+          <rect x="78" y="92" width="5" height="5" rx="1"/><rect x="92" y="78" width="5" height="5" rx="1"/>
+          <rect x="99" y="92" width="5" height="5" rx="1"/><rect x="92" y="99" width="5" height="5" rx="1"/>
+          <rect x="99" y="99" width="5" height="5" rx="1"/>
+        </g>
+      </svg>
+      <div id="userIdLine">Scan to verify</div>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div class="sec-label">Nearby Cherry Stores</div>
+  <div class="map-section">
+    <div id="map"></div>
+    <p class="map-note" id="mapNote">Requesting your location…</p>
+  </div>
+
+</main>
+
+<!-- ════ AUTH MODAL ══════════════════════════════════════════════ -->
+<div class="overlay" id="authOverlay">
+  <div class="modal">
+    <button class="modal-x" onclick="closeAuth()">×</button>
+    <div class="modal-title" id="authTitle">Welcome back</div>
+    <div class="modal-sub"   id="authSub">Sign in to access your Cherry rewards.</div>
+    <div class="field">
+      <label for="authEmail">Email</label>
+      <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email"/>
+    </div>
+    <div class="field">
+      <label for="authPin">PIN</label>
+      <input type="password" id="authPin" placeholder="4-digit PIN" maxlength="4" inputmode="numeric"/>
+    </div>
+    <button class="btn-full" id="authSubmit" onclick="submitAuth()">Sign In</button>
+    <div class="modal-foot">
+      <span id="authFootTxt">Don't have an account? </span>
+      <a id="authToggle" onclick="toggleMode()">Sign up</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+/* ── Config ────────────────────────────────────────────────────── */
+const GEOTAG_API     = "https://your-backend.onrender.com/geotags"; // update after deploy
+const MQTT_WS        = "wss://broker.hivemq.com:8884/mqtt";
+const TOPIC_REWARDS  = "user_id/rewards";
+const TOPIC_EMAIL_QR = "111aabc/email";
+const TOPIC_QR_SCAN  = "cherry/qr_scan";
+const TOPIC_LOGIN    = "cherry/login";
+
+/* OpenFreeMap style — free, no API key needed */
+const OFM_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+
+/* ── State ─────────────────────────────────────────────────────── */
+let mqttClient   = null;
+let cameraStream = null;
+let scanTimer    = null;
+let authMode     = "signin";
+let currentUser  = null;
+let glMap        = null;   // MapLibre GL map instance
+
+/* ══════════════════════════════════════════════════════════════════
+   MQTT
+══════════════════════════════════════════════════════════════════ */
+function initMQTT() {
+  const clientId = "cherry_" + Math.random().toString(16).slice(2, 10);
+  mqttClient = mqtt.connect(MQTT_WS, {
+    clientId, clean: true,
+    reconnectPeriod: 4000, connectTimeout: 12000,
+  });
+  mqttClient.on("connect",   () => { setMqttUI("on","Connected"); mqttClient.subscribe([TOPIC_REWARDS, TOPIC_EMAIL_QR]); });
+  mqttClient.on("reconnect", () => setMqttUI("busy","Reconnecting…"));
+  mqttClient.on("error",     () => setMqttUI("","Offline"));
+  mqttClient.on("close",     () => setMqttUI("","Disconnected"));
+  mqttClient.on("message",   handleMQTT);
+}
+
+function setMqttUI(cls, txt) {
+  document.getElementById("mqttDot").className = "mqtt-dot" + (cls ? " "+cls : "");
+  document.getElementById("mqttTxt").textContent = txt;
+}
+
+function mqttPub(topic, payload) {
+  if (mqttClient?.connected) mqttClient.publish(topic, JSON.stringify(payload));
+}
+
+function handleMQTT(topic, raw) {
+  let data; try { data = JSON.parse(raw.toString()); } catch { return; }
+  if (topic === TOPIC_REWARDS) {
+    if (data.title) document.getElementById("rewTitle").textContent = data.title;
+    if (data.desc)  document.getElementById("rewDesc").textContent  = data.desc;
+    if (data.exp)   document.getElementById("rewExp").textContent   = data.exp;
+    toast("🎁 Reward updated!");
+  }
+  if (topic === TOPIC_EMAIL_QR && data.user_id) {
+    document.getElementById("userIdLine").textContent = "ID: " + data.user_id;
+    toast("QR refreshed — " + data.user_id);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   SCANNER
+══════════════════════════════════════════════════════════════════ */
+function startScan() {
+  const btn = document.getElementById("scanBtn");
+  btn.textContent = "Camera opening…";
+  btn.style.background = "#444";
+
+  // Lazy-load jsQR
+  if (typeof jsQR === "undefined") {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    document.head.appendChild(s);
+  }
+
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } }
+  })
+  .then(stream => {
+    cameraStream = stream;
+    const vid = document.getElementById("camFeed");
+    vid.srcObject = stream; vid.style.display = "block";
+    btn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><circle cx="12" cy="12" r="3"/><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/></svg> Stop Scanning`;
+    btn.style.background = "#222";
+    btn.onclick = stopScan;
+    scanTimer = setInterval(decodeFrame, 350);
+  })
+  .catch(() => { resetScanBtn(); toast("Camera access denied"); });
+}
+
+function stopScan() {
+  clearInterval(scanTimer); scanTimer = null;
+  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+  document.getElementById("camFeed").style.display = "none";
+  resetScanBtn();
+}
+
+function resetScanBtn() {
+  const btn = document.getElementById("scanBtn");
+  btn.innerHTML = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/><rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/></svg> Scan Reward Code`;
+  btn.style.background = "var(--cherry)";
+  btn.onclick = startScan;
+}
+
+function decodeFrame() {
+  if (typeof jsQR === "undefined" || !cameraStream) return;
+  const vid = document.getElementById("camFeed");
+  const cvs = document.getElementById("camCanvas");
+  cvs.width = vid.videoWidth; cvs.height = vid.videoHeight;
+  if (!cvs.width) return;
+  const ctx = cvs.getContext("2d");
+  ctx.drawImage(vid, 0, 0);
+  const img  = ctx.getImageData(0, 0, cvs.width, cvs.height);
+  const code = jsQR(img.data, img.width, img.height);
+  if (code) {
+    mqttPub(TOPIC_QR_SCAN, { data: code.data, user: currentUser?.email || "anon", timestamp: Date.now() });
+    toast("✅ Scanned: " + code.data.slice(0, 40));
+    stopScan();
+    if (!currentUser) openAuth("signin");
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   AUTH
+══════════════════════════════════════════════════════════════════ */
+function openAuth(mode) {
+  authMode = mode; renderAuthUI();
+  document.getElementById("authOverlay").classList.add("open");
+  setTimeout(() => document.getElementById("authEmail").focus(), 50);
+}
+function closeAuth() { document.getElementById("authOverlay").classList.remove("open"); }
+function toggleMode() { authMode = authMode === "signin" ? "signup" : "signin"; renderAuthUI(); }
+function renderAuthUI() {
+  const s = authMode === "signin";
+  document.getElementById("authTitle").textContent   = s ? "Welcome back"                  : "Create account";
+  document.getElementById("authSub").textContent     = s ? "Sign in to your Cherry rewards." : "Join Cherry and start earning.";
+  document.getElementById("authSubmit").textContent  = s ? "Sign In"  : "Sign Up";
+  document.getElementById("authFootTxt").textContent = s ? "Don't have an account? " : "Already a member? ";
+  document.getElementById("authToggle").textContent  = s ? "Sign up"  : "Sign in";
+}
+function submitAuth() {
+  const email = document.getElementById("authEmail").value.trim();
+  const pin   = document.getElementById("authPin").value.trim();
+  if (!email)           { toast("Please enter your email"); return; }
+  if (!/^\d{4}$/.test(pin)) { toast("PIN must be 4 digits"); return; }
+  currentUser = { email };
+  mqttPub(TOPIC_LOGIN, { email, mode: authMode, timestamp: Date.now() });
+  toast(authMode === "signin" ? "👋 Signed in!" : "🎉 Account created!");
+  closeAuth();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   MAP  — OpenFreeMap via MapLibre GL JS (no API key, fully free)
+   Tiles: https://tiles.openfreemap.org/styles/liberty
+══════════════════════════════════════════════════════════════════ */
+function initMap() {
+  if (!navigator.geolocation) {
+    document.getElementById("mapNote").textContent = "Geolocation not supported — showing Auckland, NZ";
+    buildMap(-36.8485, 174.7633);
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      document.getElementById("mapNote").textContent = "Cherry stores within 8 km of you";
+      buildMap(pos.coords.latitude, pos.coords.longitude);
+    },
+    () => {
+      document.getElementById("mapNote").textContent = "Location denied — showing Auckland, NZ";
+      buildMap(-36.8485, 174.7633);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+function buildMap(lat, lng) {
+  /* ── MapLibre GL map with OpenFreeMap liberty style ── */
+  glMap = new maplibregl.Map({
+    container: "map",
+    style: OFM_STYLE,           // free OpenFreeMap vector tiles, no key needed
+    center: [lng, lat],         // MapLibre uses [lng, lat]
+    zoom: 14,
+    attributionControl: true,
+  });
+
+  /* Navigation controls (zoom +/-) */
+  glMap.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+  /* User location marker — blue pulsing dot */
+  const youEl = document.createElement("div");
+  youEl.style.cssText = `
+    width:16px; height:16px;
+    background:#38BDF8; border:3px solid #fff;
+    border-radius:50%;
+    box-shadow:0 0 0 6px rgba(56,189,248,.28);
+  `;
+  new maplibregl.Marker({ element: youEl, anchor: "center" })
+    .setLngLat([lng, lat])
+    .setPopup(new maplibregl.Popup({ offset: 14, className: "cherry-popup" })
+      .setHTML('<div class="popup-name">📍 You are here</div>'))
+    .addTo(glMap);
+
+  /* Load store geotags once the map style has loaded */
+  glMap.on("load", () => loadGeotags(lat, lng));
+}
+
+async function loadGeotags(userLat, userLng) {
+  let stores = null;
+  try {
+    const res = await fetch(`${GEOTAG_API}?lat=${userLat}&lng=${userLng}&radius=8000`,
+                            { signal: AbortSignal.timeout(5000) });
+    if (res.ok) stores = await res.json();
+  } catch (_) {}
+
+  /* Fallback demo stores */
+  if (!Array.isArray(stores) || !stores.length) {
+    stores = [
+      [ 0.013,-0.009,"Cherry – City Centre"],
+      [-0.016, 0.022,"Cherry – Westfield"],
+      [ 0.026, 0.016,"Cherry – Harbour View"],
+      [-0.009,-0.027,"Cherry – Market Square"],
+      [ 0.031,-0.019,"Cherry – Northside"],
+      [-0.022, 0.005,"Cherry – Riverside"],
+    ].map(([dlat,dlng,name]) => ({ lat:userLat+dlat, lng:userLng+dlng, name }));
+  }
+
+  /* Haversine filter: only within 8 km */
+  function haversine(la1,lo1,la2,lo2) {
+    const R=6371, r=d=>d*Math.PI/180;
+    const a=Math.sin(r(la2-la1)/2)**2 + Math.cos(r(la1))*Math.cos(r(la2))*Math.sin(r(lo2-lo1)/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  }
+
+  stores.forEach(({ lat, lng, name }) => {
+    const dist = haversine(userLat, userLng, lat, lng);
+    if (dist > 8) return;
+
+    /* Cherry pin element */
+    const pin = document.createElement("div");
+    pin.innerHTML = "🍒";
+    pin.style.cssText = `
+      width:32px; height:32px;
+      background:#C8102E; border:2.5px solid #fff;
+      border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+      box-shadow:0 3px 10px rgba(200,16,46,.45);
+      display:flex; align-items:center; justify-content:center;
+      cursor:pointer; font-size:14px;
+    `;
+    const inner = pin.firstChild;
+    if (inner) inner.style.transform = "rotate(45deg)";
+
+    const popup = new maplibregl.Popup({
+      offset: [0, -32],
+      closeButton: false,
+      className: "cherry-popup",
+    }).setHTML(`
+      <div class="popup-name">${name}</div>
+      <div class="popup-dist">${dist.toFixed(1)} km away</div>
+    `);
+
+    const marker = new maplibregl.Marker({ element: pin, anchor: "bottom" })
+      .setLngLat([lng, lat])
+      .setPopup(popup)
+      .addTo(glMap);
+
+    /* Show popup on hover */
+    pin.addEventListener("mouseenter", () => marker.togglePopup());
+    pin.addEventListener("mouseleave", () => { if (marker.getPopup().isOpen()) marker.togglePopup(); });
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   TOAST
+══════════════════════════════════════════════════════════════════ */
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3000);
+}
+
+/* ── Init ──────────────────────────────────────────────────────── */
+initMQTT();
+initMap();
+</script>
+</body>
+</html>
